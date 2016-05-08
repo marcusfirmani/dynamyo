@@ -1,0 +1,164 @@
+scriptId = 'com.marcusfirmani.dynamyo'
+scriptTitle = "Dynamyo: Dynamic Arm Orientation Detection with the Myo"
+scriptDetailsUrl = ""
+
+centerYawGOnly = 1
+centerYawAOnly = 1
+avgcenterYawA = 1
+curr_side_on = "C"
+curr_direction_going = "C"
+previousdir = "C"
+leftYawZone = -25
+leftOuterYawZone = -90
+rightYawZone = 25
+rightOuterYawZone = 90
+PI = 3.1416
+TWOPI = PI * 2
+myo.setLockingPolicy("none")
+
+function calculateDeltaRadians(currentYaw, centerYaw)
+    local deltaYaw = currentYaw - centerYaw
+
+    if (deltaYaw > PI) then
+        deltaYaw = deltaYaw - TWOPI
+    elseif(deltaYaw < -PI) then
+        deltaYaw = deltaYaw + TWOPI
+    end
+    return deltaYaw
+end
+
+function mycode()
+	--set newcode to true to run dynamic method, false to run static method
+    newcode = true
+	--set velocityinference to true to include velocity transitions, false to exclude
+    velocityinference = true
+    if(newcode == false) then
+        local currentYaw = myo.getYaw()
+        local deltaYaw = calculateDeltaRadians(currentYaw, centerYawGOnly)
+        if (deltaYaw < -YAW_DEADZONE) then
+            return "L"
+        elseif (deltaYaw > YAW_DEADZONE) then
+            return "R"
+        else
+            return "C"
+        end
+    else
+        thisYaw = myo.getYaw();
+        thisPitch = myo.getPitch();
+        thisRoll = myo.getRoll();
+        x_gyro,y_gyro,z_gyro = myo.getGyro();
+        x_orworld,y_orworld,z_orworld = myo.getOrientationWorld();
+        x_accel,y_accel,z_accel = myo.getAccel();
+        x_accel_world,y_accel_world,z_accel_world = myo.getAccelWorld();
+
+        local this_g_guess = ""
+        local this_v_guess = ""
+        local this_a_guess = ""
+        deltaYaw = calculateDeltaRadians(thisYaw, centerYawGOnly) * 57.2957795
+
+        --begin zone testing
+        --Gravity-based:
+
+        if(z_orworld < -0.9) then
+            --Arm at side centers yaw
+            centerYawGOnly = thisYaw
+            myo.debug("Arm at side, recentering")
+            this_g_guess = "C"
+        --Else, frame change detection
+        elseif (deltaYaw < leftOuterYawZone) then
+                myo.debug("FRAME CHANGE LEFT")
+                centerYawGOnly = thisYaw
+                deltaYaw = calculateDeltaRadians(thisYaw, centerYawGOnly) * 57.2957795
+                this_g_guess = "C"
+        elseif (deltaYaw > rightOuterYawZone) then
+            myo.debug("FRAME CHANGE RIGHT")
+            centerYawGOnly = thisYaw
+            deltaYaw = calculateDeltaRadians(thisYaw, centerYawGOnly) * 57.2957795
+            this_g_guess = "C"
+        --else, use yaw position to guess side
+        elseif(deltaYaw > rightYawZone) then
+            myo.debug("G: Going right")
+            this_g_guess = "R"
+        elseif(deltaYaw < leftYawZone) then
+            myo.debug("G: Going left")
+            this_g_guess = "L"
+        elseif(deltaYaw < rightYawZone and deltaYaw > leftYawZone) then
+            myo.debug("G: Going center")
+            this_g_guess = "C"
+        end
+        --Velocity-based:
+        if(y_gyro > 15) then
+            myo.debug("V: Going right")
+            curr_direction_going = "R"
+            previousdir = "R"
+            this_v_guess = "R"
+        elseif(y_gyro < -15) then
+            myo.debug("V: Going left")
+            curr_direction_going = "L"
+            previousdir = "L"
+            this_v_guess = "L"
+        else
+            myo.debug("V: Going center")
+            curr_direction_going = "C"
+			previousdir = "C"
+            this_v_guess = "C"
+        end
+        --Averaging:
+        local avgguess = ""
+        centerYawAOnly = thisYaw
+        avgcenterYawA = (avgcenterYawA*20 + centerYawAOnly)/21
+        centerYawAOnly = (centerYawAOnly + avgcenterYawA*10)/11
+        deltaYaw = calculateDeltaRadians(thisYaw, centerYawAOnly) * 57.2957795
+        if(deltaYaw > rightYawZone) then
+            myo.debug("A: Going right")
+            avgguess = "R"
+            this_a_guess = "R"
+        elseif(deltaYaw < leftYawZone) then
+            myo.debug("A: Going left")
+            avgguess = "L"
+            this_a_guess = "L"
+        elseif(deltaYaw < rightYawZone and deltaYaw > leftYawZone) then
+            myo.debug("A: Going center")
+            avgguess = "C"
+            this_a_guess = "C"
+        end
+        local augavg = "C"
+        if (avgguess == "R" and previousdir == "R") then
+            myo.debug("Augmented Avg: R")
+            augavg = "R"
+        elseif (avgguess == "L" and previousdir == "L") then
+            myo.debug("Augmented Avg: L")
+            augavg = "L"
+        end
+        --If velocityinference true, then use direction of motion over threshold to shift
+        if (this_v_guess ~= "C" and velocityinference == true) then
+            --vel over threshold, so shift state in direction of vel
+            --curr_side_on
+            if (curr_side_on == "L") then
+                if (this_v_guess == "R") then
+                    curr_side_on = "C"
+                end
+            elseif (curr_side_on == "R") then
+                if (this_v_guess == "L") then
+                    curr_side_on = "C"
+                end
+            else --curr_side_on == "C"
+                if (this_v_guess == "L") then
+                    curr_side_on = "L"
+                elseif (this_v_guess == "R") then
+                    curr_side_on = "R"
+                end
+            end
+        else --vel not over threshold, consider averaging
+            if (augavg ~= "C") then
+                --augavg not c, then use
+                curr_side_on = augavg
+            else
+                --otherwise, use gravity-based yaw
+                curr_side_on = this_g_guess
+            end
+        end
+        myo.debug("curr_side_on is " .. curr_side_on)
+        return curr_side_on
+    end
+end
